@@ -1,6 +1,7 @@
 import { api, ApiError } from './api.js';
 import { esc, attr, localZone, formatDate, formatShortDate, formatDuration, languageName, languageOptions, statusBadge, icon, button, field, submitButton } from './dom.js';
 import { analyzeRehearsalText, formatRehearsalNotes } from './rehearsal.js';
+import { assistantAnswer, ASSISTANT_PROMPTS } from './assistant.js';
 
 const root = document.querySelector('#app');
 let currentUser = null;
@@ -11,6 +12,8 @@ let timerHandle = null;
 let timerOffsetMs = 0;
 let selectedToast = null;
 let activeRehearsalNotes = '';
+let activeRehearsalScan = null;
+let activeAssistantMessages = [];
 let routeGeneration = 0;
 let demoCapturing = false;
 let demoPaused = false;
@@ -217,13 +220,13 @@ function renderWorkspace(workspace) {
   const actions = s.status === 'scheduled' ? `${button('Edit details','edit-session','button button--secondary',`data-id="${attr(s.id)}"`)}${button('Cancel session','cancel-session','button button--danger',`data-id="${attr(s.id)}"`)}<button class="button button--primary" data-action="start-session" data-id="${attr(s.id)}">Start session ${icon('arrow')}</button>` : s.status === 'in_progress' ? `${button('Edit details','edit-session','button button--secondary',`data-id="${attr(s.id)}"`)}<a class="button button--primary" href="#/sessions/${encodeURIComponent(s.id)}/finish">Finish session ${icon('arrow')}</a>` : `${button('Delete session','delete-session','button button--danger',`data-id="${attr(s.id)}"`)}`;
   const timer = s.status === 'in_progress' ? `<span class="timer"><span class="timer__label">Elapsed</span><span data-live-timer>${formatDuration(Math.floor((Date.parse(workspace.serverNow)-Date.parse(s.startedAt))/1000))}</span></span>` : '';
   const heading = `<p class="breadcrumb"><a href="#/app">Dashboard</a> / Session</p>${pageHeading('SESSION WORKSPACE',esc(s.title),sessionMeta(s),actions)}<div class="workspace-header-facts">${statusBadge(s.status)}${timer ? `<span>${timer}</span>` : ''}${s.status === 'scheduled' ? `<span>Timer starts when you start the session.</span>` : ''}</div>`;
-  const tabs = `<div class="mobile-tabs" role="tablist" aria-label="Session workspace sections"><button type="button" class="button ${activeTab==='stream'?'button--primary':'button--secondary'}" role="tab" aria-selected="${activeTab==='stream'}" data-action="workspace-tab" data-tab="stream">Stream</button><button type="button" class="button ${activeTab==='terms'?'button--primary':'button--secondary'}" role="tab" aria-selected="${activeTab==='terms'}" data-action="workspace-tab" data-tab="terms">Terms (${workspace.terms.length})</button><button type="button" class="button ${activeTab==='followups'?'button--primary':'button--secondary'}" role="tab" aria-selected="${activeTab==='followups'}" data-action="workspace-tab" data-tab="followups">Follow-ups (${workspace.followups.filter(x=>x.status==='open').length})</button><button type="button" class="button ${activeTab==='context'?'button--primary':'button--secondary'}" role="tab" aria-selected="${activeTab==='context'}" data-action="workspace-tab" data-tab="context">Context</button></div>`;
+  const tabs = `<div class="mobile-tabs" role="tablist" aria-label="Session workspace sections"><button type="button" class="button ${activeTab==='stream'?'button--primary':'button--secondary'}" role="tab" aria-selected="${activeTab==='stream'}" data-action="workspace-tab" data-tab="stream">Stream</button><button type="button" class="button ${activeTab==='terms'?'button--primary':'button--secondary'}" role="tab" aria-selected="${activeTab==='terms'}" data-action="workspace-tab" data-tab="terms">Terms (${workspace.terms.length})</button><button type="button" class="button ${activeTab==='followups'?'button--primary':'button--secondary'}" role="tab" aria-selected="${activeTab==='followups'}" data-action="workspace-tab" data-tab="followups">Follow-ups (${workspace.followups.filter(x=>x.status==='open').length})</button><button type="button" class="button ${activeTab==='context'?'button--primary':'button--secondary'}" role="tab" aria-selected="${activeTab==='context'}" data-action="workspace-tab" data-tab="context">Context</button><button type="button" class="button ${activeTab==='assistant'?'button--primary':'button--secondary'}" role="tab" aria-selected="${activeTab==='assistant'}" data-action="workspace-tab" data-tab="assistant">Assistant</button></div>`;
   const streamPanel = `<section class="panel workspace-main side-stream"><div class="panel__head"><div><h2>Conversation stream</h2><p>Manual entries only. Live transcription is not available in this version.</p></div></div>${entriesHtml(workspace)}${s.status === 'in_progress' ? `<div class="workspace-composer"><h3>Add an entry</h3><form data-form="entry-create">${field({label:'Entry type',name:'kind',options:'<option value="source">Source text</option><option value="interpretation">Interpreted text</option><option value="note">Note</option>'})}${field({label:'Text',name:'body',type:'textarea',required:true,maxLength:5000,attrs:'placeholder="Record only what you choose to save."'})}<p class="form-feedback" data-feedback></p><div class="form-actions">${submitButton('Save entry')}</div><p class="save-state">Text is saved only after the server confirms.</p></form></div>` : `<p class="notice">This session is ${s.status === 'cancelled' ? 'cancelled and read-only' : esc(s.status)}. Editing the stream is not available.</p>`}</section>`;
   const termsPanel = `<section class="panel side-terms"><div class="panel__head"><div><h2>Terminology</h2><p>${workspace.terms.length} saved term${workspace.terms.length===1?'':'s'} for this session.</p></div></div>${termsHtml(workspace,readonly)}${!readonly ? `<div class="divider"></div><form data-form="term-create">${field({label:'Source term',name:'sourceTerm',required:true,maxLength:200})}${field({label:'Target term',name:'targetTerm',required:true,maxLength:200})}${field({label:'Context or register',name:'contextRegister',maxLength:500})}<p class="form-feedback" data-feedback></p><p class="form-note" id="term-duplicate-warning" hidden>A source term like this already exists in this session. You can still save another context-specific term.</p><div class="form-actions">${submitButton('Add term')}</div></form>` : ''}</section>`;
   const followPanel = `<section class="panel side-followups"><div class="panel__head"><div><h2>Follow-ups</h2><p>${workspace.followups.filter(x=>x.status==='open').length} open</p></div></div>${followupsHtml(workspace,readonly)}${!readonly && ['scheduled','in_progress'].includes(s.status) ? `<div class="divider"></div><form data-form="followup-create">${field({label:'Follow-up action',name:'text',type:'textarea',required:true,maxLength:1000,attrs:'placeholder="A question or action to resolve after the session"'})}<p class="form-feedback" data-feedback></p><div class="form-actions">${submitButton('Add follow-up')}</div></form>` : ''}</section>`;
   const prep = workspace.preparation;
   const prepPanel = `<section class="panel side-context"><div class="panel__head"><div><h2>Preparation and context</h2><p>${workspace.prepChecklist.filter(i=>i.complete).length} of 5 ready</p></div></div><p class="section-subtitle">Goal</p><p class="text-content" lang="und" dir="auto">${esc(prep.goal || 'No goal recorded.')}</p><p class="section-subtitle">Context</p><p class="text-content" lang="und" dir="auto">${esc(prep.context || 'No context recorded.')}</p><p class="section-subtitle">Instructions</p><p class="text-content" lang="und" dir="auto">${esc(prep.instructions || 'No instructions recorded.')}</p><p class="section-subtitle">Names and pronunciation</p><p class="text-content" lang="und" dir="auto">${esc(prep.namesPronunciation || 'None recorded.')}</p><p class="section-subtitle">Tone / register</p><p class="text-content" lang="und" dir="auto">${esc(prep.toneRegister || 'None recorded.')}</p><p class="section-subtitle">Open questions</p><p class="text-content" lang="und" dir="auto">${esc(prep.openQuestions || 'None recorded.')}</p><div class="divider"></div>${checklistHtml(workspace)}<div class="form-actions"><a class="button button--secondary button--block" href="#/sessions/${encodeURIComponent(s.id)}/prepare">Edit preparation</a></div></section>`;
-  const content = `${heading}${s.status === 'cancelled' ? '<div class="notice notice--warning">Cancelled sessions are read-only. Delete is available if this record should be removed.</div>' : ''}${tabs}<div class="workspace-layout" data-active-tab="${attr(activeTab)}">${streamPanel}<aside class="workspace-side">${termsPanel}${followPanel}${prepPanel}</aside></div>`;
+  const content = `${heading}${s.status === 'cancelled' ? '<div class="notice notice--warning">Cancelled sessions are read-only. Delete is available if this record should be removed.</div>' : ''}${tabs}<div class="workspace-layout" data-active-tab="${attr(activeTab)}">${streamPanel}<aside class="workspace-side">${termsPanel}${followPanel}${prepPanel}</aside><section class="panel side-assistant">${assistantPanelHtml('workspace')}</section></div>`;
   renderWithToast(appShell(content)); startTimer(s, workspace.serverNow);
 }
 async function loadWorkspace(sessionId) {
@@ -242,6 +245,11 @@ async function loadWorkspace(sessionId) {
 function rehearsalLabHtml() {
   return `<section class="panel prep-lab"><div class="panel__head"><div><p class="eyebrow">LOCAL TEXT REVIEW</p><h2>Preparation Review</h2><p>Flag difficult source-text patterns before the assignment, then decide what deserves rehearsal.</p></div></div><label class="prep-lab__label" for="rehearsal-source">Permitted source-text excerpt</label><textarea id="rehearsal-source" maxlength="12000" rows="7" lang="und" dir="auto" placeholder="Paste a short excerpt you are allowed to use. Example: The committee expects costs to rise by 18% by 2030, although the revised model assumes a 2.4°C increase if investment is delayed."></textarea><p class="field-hint">Analyzed in this browser only. No audio is captured and no remote AI is called. Do not paste confidential or restricted material unless your client permits it.</p><div class="form-actions"><button type="button" class="button button--primary" data-action="analyze-rehearsal">Review excerpt</button><button type="button" class="button button--secondary" data-action="use-rehearsal-example">Load fictional example</button></div><div id="rehearsal-results" aria-live="polite"></div></section>`;
 }
+function assistantPanelHtml(location) {
+  const messages = activeAssistantMessages.map(message => `<div class="assistant-chat-message ${message.role === 'user' ? 'assistant-chat-message--user' : ''}"><span class="assistant-chat-message__label">${message.role === 'user' ? 'YOU' : 'CADENCE ASSISTANT'}</span><p lang="und" dir="auto">${esc(message.text)}</p>${message.role === 'assistant' && message.insertable ? `<button type="button" class="link-button assistant-insert" data-action="assistant-insert" data-location="${attr(message.insertLocation || location)}">Add to ${message.insertLocation === 'followup' ? 'follow-ups' : 'preparation'}</button>` : ''}</div>`).join('');
+  const prompts = ASSISTANT_PROMPTS.map(prompt => `<button type="button" data-action="assistant-prompt" data-prompt="${attr(prompt.key)}" data-location="${attr(location)}">${esc(prompt.label)}</button>`).join('');
+  return `<section class="panel assistant-panel" aria-label="Cadence assistant"><div class="assistant-panel__head"><div class="assistant-panel__avatar" aria-hidden="true">C</div><div><h2>Cadence assistant</h2><p>A helper, not a second interpreter — answers come from your saved session data and the local text scan.</p></div></div><div class="assistant-panel__prompts">${prompts}</div><div class="assistant-chat-history" id="assistant-chat-history" aria-live="polite">${messages || '<p class="assistant-chat-empty">Ask a question or pick a prompt above. The assistant runs in your browser only — nothing is sent anywhere.</p>'}</div><form data-form="assistant" data-location="${attr(location)}"><label class="sr-only" for="assistant-input">Ask the Cadence assistant</label><textarea id="assistant-input" name="message" rows="2" maxlength="600" placeholder="Ask about a term, figure, or what to rehearse…" dir="auto"></textarea><div class="assistant-panel__form-footer"><span>Rules-based · no AI service connected</span><button class="button button--primary button--small" type="submit">Send</button></div></form><p class="assistant-disclaimer">Suggestions can be incomplete or wrong. Verify against approved sources and the speaker's meaning. Nothing is saved unless you choose to add it.</p></section>`;
+}
 function rehearsalResultsHtml(result) {
   if (!result || result.empty) return '<p class="form-feedback" role="alert">Paste an excerpt before reviewing it.</p>';
   const list = (items, emptyText, render) => items.length ? `<ul class="rehearsal-list">${items.map(render).join('')}</ul>` : `<p class="rehearsal-empty">${emptyText}</p>`;
@@ -257,7 +265,7 @@ function rehearsalResultsHtml(result) {
 function preparationView(workspace) {
   const s = workspace.session; const p = workspace.preparation; const readOnly = ['completed','cancelled'].includes(s.status);
   if (readOnly) return appShell(`${pageHeading('PREPARATION','Preparation is read-only','Completed and cancelled records cannot be changed.')}<a class="button button--secondary" href="#/sessions/${encodeURIComponent(s.id)}">Back to session</a>`);
-  return appShell(`<p class="breadcrumb"><a href="#/app">Dashboard</a> / <a href="#/sessions/${encodeURIComponent(s.id)}">${esc(s.title)}</a> / Preparation</p>${pageHeading('PREPARATION PRIMER','Get ready for the session','Save the parts you know; leave the rest blank until you can confirm them.') }<section class="panel"><div class="panel__head"><div><h2>${esc(s.title)}</h2><p>${esc(languageName(s.languageFrom))} → ${esc(languageName(s.languageTo))} · ${esc(formatDate(s.scheduledStartUtc,s.timezone))}</p></div>${statusBadge(s.status)}</div><form data-form="preparation" data-session-id="${attr(s.id)}">${field({label:'Session goal',name:'goal',type:'textarea',value:p.goal,maxLength:2000,attrs:'placeholder="What is this assignment intended to accomplish?"'})}${field({label:'Client / assignment context',name:'context',type:'textarea',value:p.context,maxLength:4000,attrs:'placeholder="Relevant background that belongs to this session."'})}${field({label:'Interpretation instructions',name:'instructions',type:'textarea',value:p.instructions,maxLength:4000,attrs:'placeholder="Instructions you have received and want close at hand."'})}<details ${p.namesPronunciation || p.toneRegister || p.openQuestions ? 'open' : ''}><summary>Optional details</summary><div class="details-form">${field({label:'Names and pronunciation',name:'namesPronunciation',type:'textarea',value:p.namesPronunciation,maxLength:2000})}${field({label:'Tone / register',name:'toneRegister',value:p.toneRegister,maxLength:500})}${field({label:'Open questions and unresolved terminology',name:'openQuestions',type:'textarea',value:p.openQuestions,maxLength:3000})}</div></details><p class="form-feedback" data-feedback></p><div class="form-actions">${submitButton('Save preparation')}<a class="button button--secondary" href="#/sessions/${encodeURIComponent(s.id)}">Back to session</a><span class="save-state" data-save-state>${p.updatedAt ? `Last saved ${esc(formatDate(p.updatedAt,s.timezone))}` : 'Not saved yet.'}</span></div></form></section>${rehearsalLabHtml()}<section class="panel"><div class="panel__head"><div><h2>Preparation checklist</h2><p>Data-derived items update from saved information. Review marks require an explicit action.</p></div></div>${checklistHtml(workspace)}</section>`);
+  return appShell(`<p class="breadcrumb"><a href="#/app">Dashboard</a> / <a href="#/sessions/${encodeURIComponent(s.id)}">${esc(s.title)}</a> / Preparation</p>${pageHeading('PREPARATION PRIMER','Get ready for the session','Save the parts you know; leave the rest blank until you can confirm them.') }<section class="panel"><div class="panel__head"><div><h2>${esc(s.title)}</h2><p>${esc(languageName(s.languageFrom))} → ${esc(languageName(s.languageTo))} · ${esc(formatDate(s.scheduledStartUtc,s.timezone))}</p></div>${statusBadge(s.status)}</div><form data-form="preparation" data-session-id="${attr(s.id)}">${field({label:'Session goal',name:'goal',type:'textarea',value:p.goal,maxLength:2000,attrs:'placeholder="What is this assignment intended to accomplish?"'})}${field({label:'Client / assignment context',name:'context',type:'textarea',value:p.context,maxLength:4000,attrs:'placeholder="Relevant background that belongs to this session."'})}${field({label:'Interpretation instructions',name:'instructions',type:'textarea',value:p.instructions,maxLength:4000,attrs:'placeholder="Instructions you have received and want close at hand."'})}<details ${p.namesPronunciation || p.toneRegister || p.openQuestions ? 'open' : ''}><summary>Optional details</summary><div class="details-form">${field({label:'Names and pronunciation',name:'namesPronunciation',type:'textarea',value:p.namesPronunciation,maxLength:2000})}${field({label:'Tone / register',name:'toneRegister',value:p.toneRegister,maxLength:500})}${field({label:'Open questions and unresolved terminology',name:'openQuestions',type:'textarea',value:p.openQuestions,maxLength:3000})}</div></details><p class="form-feedback" data-feedback></p><div class="form-actions">${submitButton('Save preparation')}<a class="button button--secondary" href="#/sessions/${encodeURIComponent(s.id)}">Back to session</a><span class="save-state" data-save-state>${p.updatedAt ? `Last saved ${esc(formatDate(p.updatedAt,s.timezone))}` : 'Not saved yet.'}</span></div></form></section>${rehearsalLabHtml()}${assistantPanelHtml('preparation')}<section class="panel"><div class="panel__head"><div><h2>Preparation checklist</h2><p>Data-derived items update from saved information. Review marks require an explicit action.</p></div></div>${checklistHtml(workspace)}</section>`);
 }
 async function loadPreparation(sessionId) {
   try {
@@ -342,6 +350,12 @@ async function submitHandler(event) {
     demoTerms.push({ source, target, note: String(data.note || '').trim() || 'Added in preview · verify before use' });
     renderWithToast(liveWorkspaceDemoView());
     toast('Term added to this preview session. It is not saved to your account.');
+    return;
+  }
+  if (kind === 'assistant') {
+    const message = String(form.elements.message?.value || '').trim();
+    if (!message) return;
+    runAssistant(message, form.dataset.location || 'preparation');
     return;
   }
   clearFormErrors(form);
@@ -577,8 +591,10 @@ async function clickHandler(event) {
     if (action === 'analyze-rehearsal') {
       activeRehearsalNotes = '';
       const source = document.querySelector('#rehearsal-source')?.value || '';
+      const scanResult = analyzeRehearsalText(source);
+      activeRehearsalScan = scanResult;
       const results = document.querySelector('#rehearsal-results');
-      if (results) results.innerHTML = rehearsalResultsHtml(analyzeRehearsalText(source));
+      if (results) results.innerHTML = rehearsalResultsHtml(scanResult);
       return;
     }
     if (action === 'use-rehearsal-example') {
@@ -623,6 +639,33 @@ async function clickHandler(event) {
       activeTab = element.dataset.tab || 'stream';
       const layout = document.querySelector('.workspace-layout'); if (layout) layout.dataset.activeTab = activeTab;
       document.querySelectorAll('[data-action="workspace-tab"]').forEach(button => { const chosen = button.dataset.tab === activeTab; button.classList.toggle('button--primary', chosen); button.classList.toggle('button--secondary', !chosen); button.setAttribute('aria-selected', String(chosen)); });
+      return;
+    }
+    if (action === 'assistant-prompt') {
+      runAssistant(element.dataset.prompt || 'rehearse', element.dataset.location || 'preparation');
+      return;
+    }
+    if (action === 'assistant-insert') {
+      const lastAssistant = [...activeAssistantMessages].reverse().find(m => m.role === 'assistant');
+      if (!lastAssistant) { toast('No assistant answer to add.', 'error'); return; }
+      const location = element.dataset.location || 'preparation';
+      const text = String(lastAssistant.text || '').slice(0, 1000);
+      if (location === 'followup') {
+        const target = document.querySelector('#field-text');
+        if (!target) { toast('Open the follow-ups section first.', 'error'); return; }
+        target.value = target.value.trim() ? `${target.value.trim()}\n\n${text}` : text;
+        target.focus(); target.scrollIntoView({ behavior: 'auto', block: 'center' });
+        toast('Assistant answer inserted into the follow-up field. Review it, then select Add follow-up to save.');
+      } else {
+        const target = document.querySelector('#field-openQuestions');
+        if (!target) { toast('Open the preparation page first.', 'error'); return; }
+        const combined = target.value.trim() ? `${target.value.trim()}\n\nASSISTANT NOTE (rules-based; verify manually):\n${text}` : `ASSISTANT NOTE (rules-based; verify manually):\n${text}`;
+        if (combined.length > 3000) { toast('The preparation questions field is too full. Shorten existing notes first.', 'error'); return; }
+        target.closest('details')?.setAttribute('open', '');
+        target.value = combined;
+        target.focus(); target.scrollIntoView({ behavior: 'auto', block: 'center' });
+        toast('Assistant answer inserted into preparation questions. Review it, then select Save preparation.');
+      }
       return;
     }
     if (action === 'start-session') {
@@ -697,6 +740,22 @@ function inputHandler(event) {
   warning.hidden = !match;
 }
 
+function runAssistant(prompt, location) {
+  const promptLabels = { rehearse: 'What should I rehearse?', figures: 'Which figures need checking?', acronyms: 'Which acronyms are unverified?', terminology: 'Are there gaps in my terminology?', unresolved: "What's still unresolved?", closeout: 'Closeout help' };
+  const label = promptLabels[prompt] || prompt;
+  activeAssistantMessages.push({ role: 'user', text: label });
+  const answer = assistantAnswer(prompt, { workspace: activeWorkspace, rehearsalResult: activeRehearsalScan });
+  const insertable = ['rehearse', 'figures', 'acronyms', 'terminology', 'unresolved', 'closeout'].includes(prompt);
+  const insertLocation = prompt === 'closeout' || prompt === 'unresolved' ? 'followup' : 'preparation';
+  activeAssistantMessages.push({ role: 'assistant', text: answer.text, insertable, insertLocation });
+  const isPrepare = routeParts().path.endsWith('/prepare');
+  const isWorkspace = /^\/sessions\/[^/]+$/.test(routeParts().path);
+  if (isPrepare) renderWithToast(preparationView(activeWorkspace));
+  else if (isWorkspace) renderWorkspace(activeWorkspace);
+  document.querySelector('#assistant-chat-history')?.scrollTo({ top: 99999, behavior: 'auto' });
+  document.querySelector('#assistant-input')?.focus();
+}
+
 async function renderRoute() {
   routeController?.abort(); routeController = new AbortController(); stopTimer(); routeGeneration += 1;
   const generation = routeGeneration;
@@ -718,7 +777,8 @@ async function renderRoute() {
   if (isProtected && currentUser && !currentUser.onboardingCompletedAt && path !== '/onboarding' && path !== '/settings') { go('/onboarding'); return; }
   if (path === '/onboarding' && currentUser?.onboardingCompletedAt) { go('/app'); return; }
   activeWorkspace = null;
-  if (!path.endsWith('/prepare')) activeRehearsalNotes = '';
+  if (!path.endsWith('/prepare')) { activeRehearsalNotes = ''; activeRehearsalScan = null; }
+  activeAssistantMessages = [];
   if (path === '/' || path === '') { renderWithToast(homeView()); return; }
   if (path === '/live-demo') { renderWithToast(liveWorkspaceDemoView()); return; }
   if (['/signin','/signup','/forgot','/reset'].includes(path)) { renderWithToast(authView(path.slice(1), query)); return; }

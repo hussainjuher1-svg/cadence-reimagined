@@ -8,8 +8,8 @@ const root = resolve(fileURLToPath(new URL('..', import.meta.url)));
 const required = [
   'README.md','package.json','package-lock.json','.nvmrc','.env.example','server/index.mjs','server/app.mjs',
   'server/db.mjs','server/security.mjs','server/time.mjs','shared/constants.mjs','public/index.html','public/sample.html',
-  'client/src/app.js','client/src/api.js','client/src/dom.js','client/src/rehearsal.js','client/src/app.css','client/src/tokens.css',
-  'tests/workflow.test.mjs','tests/time.test.mjs','scripts/e2e-smoke.mjs','scripts/contrast.mjs','docs/legacy-audit.md','docs/feature-decisions.md','docs/data-model.md','docs/api.md',
+  'client/src/app.js','client/src/api.js','client/src/dom.js','client/src/rehearsal.js','client/src/assistant.js','client/src/app.css','client/src/tokens.css',
+  'tests/workflow.test.mjs','tests/time.test.mjs','tests/assistant.test.mjs','scripts/e2e-smoke.mjs','scripts/contrast.mjs','docs/legacy-audit.md','docs/feature-decisions.md','docs/data-model.md','docs/api.md',
   'docs/security.md','docs/supabase-migration.md','docs/dependencies.md','docs/assumptions.md','docs/design-system.md','docs/product-direction.md','docs/market-evidence.md','docs/ai-product-context.md',
   'docs/known-limitations.md','docs/test-report.md','docs/design-review.md'
 ];
